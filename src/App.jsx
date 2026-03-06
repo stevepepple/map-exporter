@@ -26,7 +26,7 @@ function App() {
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
     if (map.current) {
-      console.log('Switching theme to:', theme);
+      console.log('Switching style to:', theme);
       map.current.setStyle(theme === 'dark' ? MAPBOX_STYLE_DARK : MAPBOX_STYLE_LIGHT);
     }
   }, [theme]);
@@ -39,7 +39,7 @@ function App() {
         const response = await fetch('https://charlotteshout.com/wp-json/vibemap/v1/places-data?page=1&per_page=500');
         const data = await response.json();
         const places = Array.isArray(data) ? data : (data.places || []);
-        console.log('Data fetched:', places.length);
+        console.log('POIs fetched:', places.length);
         setPoiCount(places.length);
         setPoiData(places);
         setStatus(places.length > 0 ? 'Data Loaded' : 'No POIs Found');
@@ -53,9 +53,18 @@ function App() {
 
   const addVectorLayers = (places) => {
     const currentMap = map.current;
-    if (!currentMap || !currentMap.isStyleLoaded()) return false;
+    if (!currentMap) return false;
 
-    if (currentMap.getSource('pois')) return true;
+    // Check if style is truly ready
+    if (!currentMap.isStyleLoaded() && !currentMap.loaded()) {
+      return false;
+    }
+
+    // Prevent duplicates
+    if (currentMap.getSource('pois')) {
+      console.log('Source "pois" already active');
+      return true;
+    }
 
     console.log('Injecting vector layers for', places.length, 'points');
 
@@ -107,10 +116,10 @@ function App() {
           'text-halo-width': 2
         }
       });
-      console.log('Layers injected successfully');
+      console.log('Layers successfully injected into engine');
       return true;
     } catch (e) {
-      console.error('Layer injection failed:', e);
+      console.warn('Silent layer injection failure (engine busy):', e.message);
       return false;
     }
   };
@@ -119,13 +128,13 @@ function App() {
     const currentMap = map.current;
     if (!currentMap || poiData.length === 0) return;
 
-    if (!currentMap.isStyleLoaded()) {
-      console.log('Style still loading, delaying sync...');
+    // Be more permissive on the first load, but rely on isStyleLoaded for safety during transitions
+    const isReady = currentMap.isStyleLoaded() || currentMap.loaded();
+    if (!isReady) {
       return;
     }
 
-    console.log('Starting Paranoid Sync...');
-    // Clear old layers/sources to prevent name collisions
+    console.log('Syncing layers...');
     try {
       if (currentMap.getLayer('poi-labels')) currentMap.removeLayer('poi-labels');
       if (currentMap.getLayer('poi-circles')) currentMap.removeLayer('poi-circles');
@@ -135,25 +144,24 @@ function App() {
     addVectorLayers(poiData);
   };
 
-  // Paranoid Sync Engine
+  // Paranoid Sync Engine v2
   useEffect(() => {
     if (!map.current) return;
 
     const currentMap = map.current;
 
-    // Listen to everything that could signal a stable style
-    const events = ['style.load', 'idle', 'styledata'];
+    // Attach to all relevant events including 'load' and 'move'
+    const events = ['load', 'style.load', 'idle', 'moveend', 'styledata'];
     events.forEach(ev => currentMap.on(ev, performSync));
 
-    // Polling fallback to catch missed events
+    // High-frequency polling for the first few seconds to ensure visibility
     const pollInterval = setInterval(() => {
-      if (currentMap.isStyleLoaded() && !currentMap.getLayer('poi-circles')) {
-        console.log('Polling detected missing layers, syncing...');
+      if (!currentMap.getLayer('poi-circles')) {
         performSync();
       }
-    }, 1500);
+    }, 1000);
 
-    // Immediate attempt
+    // Initial attempt after data loads
     performSync();
 
     return () => {
@@ -168,7 +176,7 @@ function App() {
     const timeout = setTimeout(() => {
       if (loading) {
         setLoading(false);
-        setStatus('Ready (Bypass)');
+        setStatus('Ready (Auto-reveal)');
       }
     }, 8000);
 
@@ -198,9 +206,10 @@ function App() {
       map.current.addControl(exportControl.current, 'top-right');
 
       map.current.on('load', () => {
-        console.log('Engine online');
+        console.log('Map engine operational');
         setLoading(false);
         clearTimeout(timeout);
+        performSync(); // Force sync on first load
       });
 
     } catch (err) {
@@ -217,7 +226,7 @@ function App() {
 
   const handleExport = (format) => {
     setExporting(true);
-    setStatus(`Compiling Vector Core (${format.toUpperCase()})...`);
+    setStatus(`Exporting ${format.toUpperCase()}...`);
     try {
       const btn = document.querySelector(`.mapboxgl-ctrl-export-${format}`) ||
         document.querySelector('.mapbox-gl-export-btn');
@@ -225,7 +234,7 @@ function App() {
         btn.click();
         setStatus('Export successful');
       } else {
-        alert(`Initializing ${format.toUpperCase()} export...`);
+        alert(`Generating ${format.toUpperCase()}...`);
       }
     } catch (err) {
       setStatus('Export failed');
@@ -242,7 +251,7 @@ function App() {
         <header className="header">
           <div className="brand-section">
             <h1>Vector Core</h1>
-            <p>Convert Mapbox layers to Figma / Illustrator.</p>
+            <p>Export Mapbox layers to Figma / Illustrator.</p>
           </div>
           <button className="theme-toggle" onClick={() => setTheme(p => p === 'dark' ? 'light' : 'dark')}>
             {theme === 'dark' ? <Sun size={20} /> : <Moon size={20} />}
@@ -251,11 +260,11 @@ function App() {
 
         <div className="stats-grid">
           <div className="stat-card">
-            <div className="stat-label">POIS IDENTIFIED</div>
+            <div className="stat-label">POIs Identified</div>
             <div className="stat-value">{poiCount}</div>
           </div>
           <div className="stat-card">
-            <div className="stat-label">SYSTEM</div>
+            <div className="stat-label">System</div>
             <div className="stat-value" style={{ fontSize: '0.8rem', color: errorMsg ? '#ef4444' : '#f8c21a' }}>
               {errorMsg ? 'RESTRICTED' : 'ONLINE'}
             </div>
@@ -263,7 +272,7 @@ function App() {
         </div>
 
         <div className="controls">
-          <div className="section-title">Engine Pulse</div>
+          <div className="section-title">Engine Status</div>
           <div className="pulse-bubble">{status}</div>
 
           <button
@@ -271,12 +280,12 @@ function App() {
             style={{ marginTop: '12px', width: '100%', fontSize: '0.75rem', gap: '8px' }}
             onClick={performSync}
           >
-            <RefreshCw size={14} /> Re-Sync Layers
+            <RefreshCw size={14} /> Refresh Map Layers
           </button>
         </div>
 
         <div className="export-section">
-          <div className="section-title">High-Res Export</div>
+          <div className="section-title">Export Options</div>
           <button className="btn btn-primary" onClick={() => handleExport('svg')} disabled={exporting}>
             <Download size={18} /> Export SVG (Figma)
           </button>
@@ -287,9 +296,9 @@ function App() {
 
         <div className="footer">
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px', color: '#10b981' }}>
-            <CheckCircle2 size={14} /> API Feed Active
+            <CheckCircle2 size={14} /> Live API Active
           </div>
-          <p>Note: Paths are preserved for vector editing.</p>
+          <p>Note: Vector paths are preserved for design edits.</p>
         </div>
       </div>
 
@@ -301,7 +310,7 @@ function App() {
           <span style={{ fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase' }}>Preparing map...</span>
           <span style={{ fontSize: '0.875rem', color: 'var(--text-muted)' }}>{status}</span>
           <button className="btn btn-outline" style={{ marginTop: '20px', fontSize: '0.75rem' }} onClick={() => setLoading(false)}>
-            Force Skip
+            Bypass Loading
           </button>
         </div>
       )}
