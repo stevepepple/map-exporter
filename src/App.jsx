@@ -19,7 +19,7 @@ function App() {
   const [exporting, setExporting] = useState(false);
   const [status, setStatus] = useState('Initializing Map...');
   const [errorMsg, setErrorMsg] = useState(null);
-  const [theme, setTheme] = useState('dark');
+  const [theme, setTheme] = useState('light');
   const [poiData, setPoiData] = useState([]);
 
   // Theme Sync
