@@ -22,11 +22,15 @@ function App() {
   const [theme, setTheme] = useState('light');
   const [poiData, setPoiData] = useState([]);
 
+  // Ref for the "Initial Render Nudge"
+  const renderedOnce = useRef(false);
+
   // Theme Sync
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
     if (map.current) {
       console.log('Switching style to:', theme);
+      renderedOnce.current = false; // Reset nudge for theme change
       map.current.setStyle(theme === 'dark' ? MAPBOX_STYLE_DARK : MAPBOX_STYLE_LIGHT);
     }
   }, [theme]);
@@ -55,14 +59,8 @@ function App() {
     const currentMap = map.current;
     if (!currentMap) return false;
 
-    // Check if style is truly ready
-    if (!currentMap.isStyleLoaded() && !currentMap.loaded()) {
-      return false;
-    }
-
-    // Prevent duplicates
+    // Check if source already exists to avoid errors
     if (currentMap.getSource('pois')) {
-      console.log('Source "pois" already active');
       return true;
     }
 
@@ -116,7 +114,22 @@ function App() {
           'text-halo-width': 2
         }
       });
-      console.log('Layers successfully injected into engine');
+
+      console.log('Layers successfully injected');
+
+      // THE NUDGE: Force Mapbox to wake up
+      if (!renderedOnce.current) {
+        setTimeout(() => {
+          console.log('Executing render nudge...');
+          currentMap.triggerRepaint();
+          currentMap.resize();
+          // Tiny zoom nudge is the most effective way to force a layer reveal in stuck engines
+          currentMap.zoomTo(currentMap.getZoom() + 0.0001, { animate: false });
+          currentMap.zoomTo(currentMap.getZoom() - 0.0001, { animate: false });
+          renderedOnce.current = true;
+        }, 100);
+      }
+
       return true;
     } catch (e) {
       console.warn('Silent layer injection failure (engine busy):', e.message);
@@ -128,9 +141,18 @@ function App() {
     const currentMap = map.current;
     if (!currentMap || poiData.length === 0) return;
 
-    // Be more permissive on the first load, but rely on isStyleLoaded for safety during transitions
-    const isReady = currentMap.isStyleLoaded() || currentMap.loaded();
-    if (!isReady) {
+    // Avoid infinite sync loops if layers are already built
+    if (currentMap.getLayer('poi-circles')) {
+      return;
+    }
+
+    // Be slightly more permissive on initial load state
+    const isReady = currentMap.isStyleLoaded() || currentMap.loaded() || renderedOnce.current;
+
+    // Still try to add if the map is initialized but maybe just reporting as not "loaded"
+    if (!isReady && !currentMap.getSource('pois')) {
+      // Proceed anyway, addVectorLayers has its own guards
+    } else if (!isReady) {
       return;
     }
 
@@ -144,28 +166,33 @@ function App() {
     addVectorLayers(poiData);
   };
 
-  // Paranoid Sync Engine v2
+  // Guaranteed Render Engine
   useEffect(() => {
     if (!map.current) return;
 
     const currentMap = map.current;
 
-    // Attach to all relevant events including 'load' and 'move'
+    // Attach to all relevant events
     const events = ['load', 'style.load', 'idle', 'moveend', 'styledata'];
-    events.forEach(ev => currentMap.on(ev, performSync));
+    const handlers = events.map(ev => {
+      const handler = () => performSync();
+      currentMap.on(ev, handler);
+      return { ev, handler };
+    });
 
-    // High-frequency polling for the first few seconds to ensure visibility
+    // Safety polling logic
     const pollInterval = setInterval(() => {
-      if (!currentMap.getLayer('poi-circles')) {
+      if (!currentMap.getLayer('poi-circles') && poiData.length > 0) {
+        console.log('Polling detected missing layers, attempting recovery...');
         performSync();
       }
-    }, 1000);
+    }, 1500);
 
-    // Initial attempt after data loads
+    // Initial attempt after data or theme change
     performSync();
 
     return () => {
-      events.forEach(ev => currentMap.off(ev, performSync));
+      handlers.forEach(({ ev, handler }) => currentMap.off(ev, handler));
       clearInterval(pollInterval);
     };
   }, [poiData, theme]);
@@ -278,7 +305,10 @@ function App() {
           <button
             className="btn btn-outline"
             style={{ marginTop: '12px', width: '100%', fontSize: '0.75rem', gap: '8px' }}
-            onClick={performSync}
+            onClick={() => {
+              renderedOnce.current = false; // Reset nudge for manual click
+              performSync();
+            }}
           >
             <RefreshCw size={14} /> Refresh Map Layers
           </button>
