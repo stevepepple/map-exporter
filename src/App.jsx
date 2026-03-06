@@ -26,7 +26,7 @@ function App() {
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
     if (map.current) {
-      console.log('Changing map style to:', theme);
+      console.log('Switching theme to:', theme);
       map.current.setStyle(theme === 'dark' ? MAPBOX_STYLE_DARK : MAPBOX_STYLE_LIGHT);
     }
   }, [theme]);
@@ -39,79 +39,58 @@ function App() {
         const response = await fetch('https://charlotteshout.com/wp-json/vibemap/v1/places-data?page=1&per_page=500');
         const data = await response.json();
         const places = Array.isArray(data) ? data : (data.places || []);
-        console.log('Fetched POIs:', places.length);
-
-        if (places.length > 0) {
-          const first = places[0];
-          console.log('Sample Coordinates:',
-            first.meta?.vibemap_place_longitude || first.longitude,
-            first.meta?.vibemap_place_latitude || first.latitude
-          );
-        }
-
+        console.log('Data fetched:', places.length);
         setPoiCount(places.length);
         setPoiData(places);
         setStatus(places.length > 0 ? 'Data Loaded' : 'No POIs Found');
       } catch (err) {
-        console.error('POI Fetch Error:', err);
+        console.error('Fetch Error:', err);
         setStatus('Data Fetch Failed');
       }
     };
-
     fetchPOIs();
   }, []);
 
   const addVectorLayers = (places) => {
-    if (!map.current || !map.current.isStyleLoaded()) {
-      console.warn('Cannot add layers: Style not fully loaded or map missing');
-      return;
-    }
+    const currentMap = map.current;
+    if (!currentMap || !currentMap.isStyleLoaded()) return false;
 
-    if (map.current.getSource('pois')) {
-      console.log('Source "pois" already exists');
-      return;
-    }
+    if (currentMap.getSource('pois')) return true;
 
-    console.log('Drawing vector layers for', places.length, 'points');
+    console.log('Injecting vector layers for', places.length, 'points');
 
     const features = places.map(place => {
       const lng = parseFloat(place.meta?.vibemap_place_longitude || place.longitude);
       const lat = parseFloat(place.meta?.vibemap_place_latitude || place.latitude);
-
       return {
         type: 'Feature',
-        geometry: {
-          type: 'Point',
-          coordinates: [lng, lat]
-        },
+        geometry: { type: 'Point', coordinates: [lng, lat] },
         properties: {
-          title: place.title || 'Unknown Place',
+          title: place.title || 'Unknown',
           category: place.categories?.[0]?.name || 'Uncategorized'
         }
       };
     }).filter(f => !isNaN(f.geometry.coordinates[0]) && !isNaN(f.geometry.coordinates[1]));
 
     try {
-      map.current.addSource('pois', {
+      currentMap.addSource('pois', {
         type: 'geojson',
         data: { type: 'FeatureCollection', features }
       });
 
-      // circles (using high-contrast red for debug)
-      map.current.addLayer({
+      currentMap.addLayer({
         id: 'poi-circles',
         type: 'circle',
         source: 'pois',
         paint: {
-          'circle-radius': 8,
-          'circle-color': '#ff3e3e',
+          'circle-radius': 6,
+          'circle-color': '#f8c21a',
           'circle-stroke-width': 2,
           'circle-stroke-color': '#ffffff'
         }
       });
 
-      // labels
-      map.current.addLayer({
+      currentMap.addLayer({
         id: 'poi-labels',
         type: 'symbol',
         source: 'pois',
@@ -128,43 +107,59 @@ function App() {
           'text-halo-width': 2
         }
       });
-      console.log('Layers added successfully');
+      console.log('Layers injected successfully');
+      return true;
     } catch (e) {
-      console.error('Error adding layers:', e);
+      console.error('Layer injection failed:', e);
+      return false;
     }
   };
 
   const performSync = () => {
-    if (poiData.length > 0 && map.current && map.current.isStyleLoaded()) {
-      console.log('Performing layer sync. Theme:', theme);
+    const currentMap = map.current;
+    if (!currentMap || poiData.length === 0) return;
 
-      try {
-        if (map.current.getLayer('poi-labels')) map.current.removeLayer('poi-labels');
-        if (map.current.getLayer('poi-circles')) map.current.removeLayer('poi-circles');
-        if (map.current.getSource('pois')) map.current.removeSource('pois');
-      } catch (e) {
-        console.log('Cleanup failed or not needed');
-      }
-
-      addVectorLayers(poiData);
-    } else {
-      console.warn('Sync skipped: Data missing or map not ready');
+    if (!currentMap.isStyleLoaded()) {
+      console.log('Style still loading, delaying sync...');
+      return;
     }
+
+    console.log('Starting Paranoid Sync...');
+    // Clear old layers/sources to prevent name collisions
+    try {
+      if (currentMap.getLayer('poi-labels')) currentMap.removeLayer('poi-labels');
+      if (currentMap.getLayer('poi-circles')) currentMap.removeLayer('poi-circles');
+      if (currentMap.getSource('pois')) currentMap.removeSource('pois');
+    } catch (e) { }
+
+    addVectorLayers(poiData);
   };
 
-  // Robust Layer Synchronization
+  // Paranoid Sync Engine
   useEffect(() => {
     if (!map.current) return;
 
-    // style.load is the primary event
-    map.current.on('style.load', performSync);
+    const currentMap = map.current;
 
-    // Initial check
-    if (map.current.isStyleLoaded()) {
-      performSync();
-    }
+    // Listen to everything that could signal a stable style
+    const events = ['style.load', 'idle', 'styledata'];
+    events.forEach(ev => currentMap.on(ev, performSync));
 
-    return () => map.current?.off('style.load', performSync);
+    // Polling fallback to catch missed events
+    const pollInterval = setInterval(() => {
+      if (currentMap.isStyleLoaded() && !currentMap.getLayer('poi-circles')) {
+        console.log('Polling detected missing layers, syncing...');
+        performSync();
+      }
+    }, 1500);
+
+    // Immediate attempt
+    performSync();
+
+    return () => {
+      events.forEach(ev => currentMap.off(ev, performSync));
+      clearInterval(pollInterval);
+    };
   }, [poiData, theme]);
 
   useEffect(() => {
@@ -173,12 +168,12 @@ function App() {
     const timeout = setTimeout(() => {
       if (loading) {
         setLoading(false);
-        setStatus('Ready (Safety Timeout)');
+        setStatus('Ready (Bypass)');
       }
-    }, 12000);
+    }, 8000);
 
     try {
-      console.log('Initializing Mapbox engine');
+      console.log('Igniting Mapbox engine');
       map.current = new mapboxgl.Map({
         container: mapContainer.current,
         style: theme === 'dark' ? MAPBOX_STYLE_DARK : MAPBOX_STYLE_LIGHT,
@@ -187,7 +182,7 @@ function App() {
         preserveDrawingBuffer: true
       });
 
-      // Expose for production debugging
+      // Expose for production inspection
       window._map = map.current;
 
       map.current.addControl(new mapboxgl.NavigationControl(), 'bottom-right');
@@ -203,18 +198,13 @@ function App() {
       map.current.addControl(exportControl.current, 'top-right');
 
       map.current.on('load', () => {
-        console.log('Map basic operational');
+        console.log('Engine online');
         setLoading(false);
         clearTimeout(timeout);
       });
 
-      map.current.on('error', (e) => {
-        console.error('Map Engine Error:', e);
-        setErrorMsg(e.error?.message || 'Engine collision');
-      });
-
     } catch (err) {
-      console.error('Fatal Initialization Error:', err);
+      console.error('Fatal Init Error:', err);
       setErrorMsg(err.message);
       setLoading(false);
     }
@@ -227,26 +217,22 @@ function App() {
 
   const handleExport = (format) => {
     setExporting(true);
-    setStatus(`Exporting ${format.toUpperCase()} Vector Core...`);
-
+    setStatus(`Compiling Vector Core (${format.toUpperCase()})...`);
     try {
       const btn = document.querySelector(`.mapboxgl-ctrl-export-${format}`) ||
         document.querySelector('.mapbox-gl-export-btn');
-
       if (btn) {
         btn.click();
-        setStatus('Download initiated');
+        setStatus('Export successful');
       } else {
-        alert(`Generating high-res ${format.toUpperCase()}... Please check your downloads folder.`);
+        alert(`Initializing ${format.toUpperCase()} export...`);
       }
     } catch (err) {
-      console.error('Export Failure:', err);
-      setStatus('Export Failed');
+      setStatus('Export failed');
     }
-
     setTimeout(() => {
       setExporting(false);
-      setStatus(prev => prev === 'Download initiated' ? 'Ready' : prev);
+      setStatus(prev => prev === 'Export successful' ? 'Ready' : prev);
     }, 4000);
   };
 
@@ -259,7 +245,7 @@ function App() {
             <p>Convert Mapbox layers to Figma / Illustrator.</p>
           </div>
           <button className="theme-toggle" onClick={() => setTheme(p => p === 'dark' ? 'light' : 'dark')}>
-            {theme === 'dark' ? <Sun size={20} /> : <Moon size={12} />}
+            {theme === 'dark' ? <Sun size={20} /> : <Moon size={20} />}
           </button>
         </header>
 
@@ -269,15 +255,15 @@ function App() {
             <div className="stat-value">{poiCount}</div>
           </div>
           <div className="stat-card">
-            <div className="stat-label">ENGINE</div>
+            <div className="stat-label">SYSTEM</div>
             <div className="stat-value" style={{ fontSize: '0.8rem', color: errorMsg ? '#ef4444' : '#f8c21a' }}>
-              {errorMsg ? 'RESTRICTED' : 'ACTIVE'}
+              {errorMsg ? 'RESTRICTED' : 'ONLINE'}
             </div>
           </div>
         </div>
 
         <div className="controls">
-          <div className="section-title">System Status</div>
+          <div className="section-title">Engine Pulse</div>
           <div className="pulse-bubble">{status}</div>
 
           <button
@@ -285,14 +271,8 @@ function App() {
             style={{ marginTop: '12px', width: '100%', fontSize: '0.75rem', gap: '8px' }}
             onClick={performSync}
           >
-            <RefreshCw size={14} /> Force Sync Points
+            <RefreshCw size={14} /> Re-Sync Layers
           </button>
-
-          {errorMsg && (
-            <div style={{ fontSize: '0.7rem', color: '#ef4444', marginTop: '10px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-              <AlertCircle size={12} /> Resource limitation detected
-            </div>
-          )}
         </div>
 
         <div className="export-section">
@@ -307,9 +287,9 @@ function App() {
 
         <div className="footer">
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px', color: '#10b981' }}>
-            <CheckCircle2 size={14} /> Live Connection Active
+            <CheckCircle2 size={14} /> API Feed Active
           </div>
-          <p>Note: High-fidelity vector paths are preserved.</p>
+          <p>Note: Paths are preserved for vector editing.</p>
         </div>
       </div>
 
@@ -321,7 +301,7 @@ function App() {
           <span style={{ fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase' }}>Preparing map...</span>
           <span style={{ fontSize: '0.875rem', color: 'var(--text-muted)' }}>{status}</span>
           <button className="btn btn-outline" style={{ marginTop: '20px', fontSize: '0.75rem' }} onClick={() => setLoading(false)}>
-            Force Reveal Map
+            Force Skip
           </button>
         </div>
       )}
