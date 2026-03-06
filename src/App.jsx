@@ -109,6 +109,29 @@ function App() {
     });
   };
 
+  // Layer Persistence & Theme Coloring
+  useEffect(() => {
+    if (!map.current) return;
+
+    const syncLayers = () => {
+      if (poiData.length > 0) {
+        // Remove existing layers/sources if they exist to force update colors
+        if (map.current.getLayer('poi-labels')) map.current.removeLayer('poi-labels');
+        if (map.current.getLayer('poi-circles')) map.current.removeLayer('poi-circles');
+        if (map.current.getSource('pois')) map.current.removeSource('pois');
+
+        addVectorLayers(poiData);
+      }
+    };
+
+    if (map.current.isStyleLoaded()) {
+      syncLayers();
+    }
+
+    map.current.on('style.load', syncLayers);
+    return () => map.current?.off('style.load', syncLayers);
+  }, [poiData, theme]);
+
   useEffect(() => {
     if (map.current) return;
 
@@ -139,10 +162,6 @@ function App() {
         PrintableArea: true
       });
       map.current.addControl(exportControl.current, 'top-right');
-
-      map.current.on('style.load', () => {
-        if (poiData.length > 0) addVectorLayers(poiData);
-      });
 
       map.current.on('load', () => {
         setLoading(false);
@@ -262,7 +281,7 @@ function App() {
       {loading && (
         <div className="loading-overlay" style={{ zIndex: 100 }}>
           <div className="spinner" />
-          <span style={{ fontWeight: 600, letterSpacing: '0.05em', color: 'var(--text)' }}>BOOTING VECTOR ENGINE...</span>
+          <span style={{ fontWeight: 600, letterSpacing: '0.05em', color: 'var(--text)', textTransform: 'uppercase' }}>Preparing map...</span>
           <span style={{ fontSize: '0.875rem', color: 'var(--text-muted)' }}>{status}</span>
           <button
             className="btn btn-outline"
