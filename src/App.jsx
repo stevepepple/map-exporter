@@ -26,6 +26,7 @@ function App() {
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
     if (map.current) {
+      console.log('Setting map style for theme:', theme);
       map.current.setStyle(theme === 'dark' ? MAPBOX_STYLE_DARK : MAPBOX_STYLE_LIGHT);
     }
   }, [theme]);
@@ -41,10 +42,6 @@ function App() {
         console.log('POI Data fetched:', places.length);
         setPoiCount(places.length);
         setPoiData(places);
-
-        if (map.current && map.current.isStyleLoaded()) {
-          addVectorLayers(places);
-        }
         setStatus(places.length > 0 ? 'Data Loaded' : 'No POIs Found');
       } catch (err) {
         console.error('POI Fetch Error:', err);
@@ -56,7 +53,17 @@ function App() {
   }, []);
 
   const addVectorLayers = (places) => {
-    if (!map.current || !map.current.isStyleLoaded() || map.current.getSource('pois')) return;
+    if (!map.current || !map.current.isStyleLoaded()) {
+      console.warn('Cannot add layers: Map or style not ready');
+      return;
+    }
+
+    if (map.current.getSource('pois')) {
+      console.log('POIs source already exists, skipping add');
+      return;
+    }
+
+    console.log('Adding vector layers for', places.length, 'places');
 
     const features = places.map(place => ({
       type: 'Feature',
@@ -114,11 +121,18 @@ function App() {
     if (!map.current) return;
 
     const syncLayers = () => {
-      if (poiData.length > 0) {
-        // Remove existing layers/sources if they exist to force update colors
-        if (map.current.getLayer('poi-labels')) map.current.removeLayer('poi-labels');
-        if (map.current.getLayer('poi-circles')) map.current.removeLayer('poi-circles');
-        if (map.current.getSource('pois')) map.current.removeSource('pois');
+      const currentMap = map.current;
+      if (poiData.length > 0 && currentMap && currentMap.isStyleLoaded()) {
+        console.log('Syncing layers for theme:', theme, 'POIs:', poiData.length);
+
+        // Safely remove existing layers/sources to force fresh render with correct colors
+        try {
+          if (currentMap.getLayer('poi-labels')) currentMap.removeLayer('poi-labels');
+          if (currentMap.getLayer('poi-circles')) currentMap.removeLayer('poi-circles');
+          if (currentMap.getSource('pois')) currentMap.removeSource('pois');
+        } catch (e) {
+          console.warn('Error clearing layers during sync:', e);
+        }
 
         addVectorLayers(poiData);
       }
@@ -164,6 +178,7 @@ function App() {
       map.current.addControl(exportControl.current, 'top-right');
 
       map.current.on('load', () => {
+        console.log('Map basic load complete');
         setLoading(false);
         clearTimeout(loadingTimeout);
       });
