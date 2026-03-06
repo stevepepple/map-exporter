@@ -1,0 +1,1 @@
+{"version":3,"file":"ControlOptions.d.ts","sourceRoot":"","sources":["../../../src/lib/interfaces/ControlOptions.ts"],"names":[],"mappings":"AAAA,OAAO,EAAE,KAAK,cAAc,IAAI,sBAAsB,EAAE,MAAM,8BAA8B,CAAC;AAE7F,MAAM,WAAW,cAAe,SAAQ,sBAAsB;IAC7D,WAAW,CAAC,EAAE,MAAM,CAAC;CACrB"}
