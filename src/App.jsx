@@ -3,7 +3,7 @@ import mapboxgl from 'mapbox-gl';
 import { MapboxExportControl, Size, PageOrientation, Format, DPI } from '@watergis/mapbox-gl-export';
 import '@watergis/mapbox-gl-export/dist/mapbox-gl-export.css';
 import 'mapbox-gl/dist/mapbox-gl.css';
-import { Download, Sun, Moon, CheckCircle2, AlertCircle } from 'lucide-react';
+import { Download, Sun, Moon, CheckCircle2, AlertCircle, RefreshCw } from 'lucide-react';
 
 // Using a standard style for better reliability on localhost
 mapboxgl.accessToken = 'pk.eyJ1Ijoic3RldmVwZXBwbGUiLCJhIjoiTmd4T0wyNCJ9.1-jWg2J5XmFfnBAhyrORmw';
@@ -41,7 +41,6 @@ function App() {
         const places = Array.isArray(data) ? data : (data.places || []);
         console.log('Fetched POIs:', places.length);
 
-        // Debug first feature
         if (places.length > 0) {
           const first = places[0];
           console.log('Sample Coordinates:',
@@ -64,12 +63,12 @@ function App() {
 
   const addVectorLayers = (places) => {
     if (!map.current || !map.current.isStyleLoaded()) {
-      console.warn('Cannot add layers: Style not fully loaded');
+      console.warn('Cannot add layers: Style not fully loaded or map missing');
       return;
     }
 
-    // Prevent double sources
     if (map.current.getSource('pois')) {
+      console.log('Source "pois" already exists');
       return;
     }
 
@@ -86,75 +85,81 @@ function App() {
           coordinates: [lng, lat]
         },
         properties: {
-          title: place.title,
+          title: place.title || 'Unknown Place',
           category: place.categories?.[0]?.name || 'Uncategorized'
         }
       };
     }).filter(f => !isNaN(f.geometry.coordinates[0]) && !isNaN(f.geometry.coordinates[1]));
 
-    map.current.addSource('pois', {
-      type: 'geojson',
-      data: { type: 'FeatureCollection', features }
-    });
+    try {
+      map.current.addSource('pois', {
+        type: 'geojson',
+        data: { type: 'FeatureCollection', features }
+      });
 
-    // Circles first (lower)
-    map.current.addLayer({
-      id: 'poi-circles',
-      type: 'circle',
-      source: 'pois',
-      paint: {
-        'circle-radius': 6,
-        'circle-color': '#f8c21a',
-        'circle-stroke-width': 2,
-        'circle-stroke-color': '#ffffff'
-      }
-    });
+      // circles (using high-contrast red for debug)
+      map.current.addLayer({
+        id: 'poi-circles',
+        type: 'circle',
+        source: 'pois',
+        paint: {
+          'circle-radius': 8,
+          'circle-color': '#ff3e3e',
+          'circle-stroke-width': 2,
+          'circle-stroke-color': '#ffffff'
+        }
+      });
 
-    // Labels on top
-    map.current.addLayer({
-      id: 'poi-labels',
-      type: 'symbol',
-      source: 'pois',
-      layout: {
-        'text-field': ['get', 'title'],
-        // Safer font bundle for standard mapbox styles
-        'text-font': ['DIN Offc Pro Bold', 'Arial Unicode MS Bold'],
-        'text-size': 12,
-        'text-offset': [0, 1.5],
-        'text-anchor': 'top'
-      },
-      paint: {
-        'text-color': theme === 'dark' ? '#ffffff' : '#0f172a',
-        'text-halo-color': theme === 'dark' ? '#000000' : '#ffffff',
-        'text-halo-width': 1.5
+      // labels
+      map.current.addLayer({
+        id: 'poi-labels',
+        type: 'symbol',
+        source: 'pois',
+        layout: {
+          'text-field': ['get', 'title'],
+          'text-font': ['Open Sans Regular', 'Arial Unicode MS Regular'],
+          'text-size': 12,
+          'text-offset': [0, 1.5],
+          'text-anchor': 'top'
+        },
+        paint: {
+          'text-color': theme === 'dark' ? '#ffffff' : '#0f172a',
+          'text-halo-color': theme === 'dark' ? '#000000' : '#ffffff',
+          'text-halo-width': 2
+        }
+      });
+      console.log('Layers added successfully');
+    } catch (e) {
+      console.error('Error adding layers:', e);
+    }
+  };
+
+  const performSync = () => {
+    if (poiData.length > 0 && map.current && map.current.isStyleLoaded()) {
+      console.log('Performing layer sync. Theme:', theme);
+
+      try {
+        if (map.current.getLayer('poi-labels')) map.current.removeLayer('poi-labels');
+        if (map.current.getLayer('poi-circles')) map.current.removeLayer('poi-circles');
+        if (map.current.getSource('pois')) map.current.removeSource('pois');
+      } catch (e) {
+        console.log('Cleanup failed or not needed');
       }
-    });
+
+      addVectorLayers(poiData);
+    } else {
+      console.warn('Sync skipped: Data missing or map not ready');
+    }
   };
 
   // Robust Layer Synchronization
   useEffect(() => {
     if (!map.current) return;
 
-    const performSync = () => {
-      if (poiData.length > 0 && map.current && map.current.isStyleLoaded()) {
-        console.log('Performing layer sync for theme:', theme);
-
-        try {
-          if (map.current.getLayer('poi-labels')) map.current.removeLayer('poi-labels');
-          if (map.current.getLayer('poi-circles')) map.current.removeLayer('poi-circles');
-          if (map.current.getSource('pois')) map.current.removeSource('pois');
-        } catch (e) {
-          console.log('Styles already clear');
-        }
-
-        addVectorLayers(poiData);
-      }
-    };
-
-    // Style load is the definitive event
+    // style.load is the primary event
     map.current.on('style.load', performSync);
 
-    // Also try immediately if already loaded
+    // Initial check
     if (map.current.isStyleLoaded()) {
       performSync();
     }
@@ -170,7 +175,7 @@ function App() {
         setLoading(false);
         setStatus('Ready (Safety Timeout)');
       }
-    }, 10000);
+    }, 12000);
 
     try {
       console.log('Initializing Mapbox engine');
@@ -181,6 +186,9 @@ function App() {
         zoom: 15,
         preserveDrawingBuffer: true
       });
+
+      // Expose for production debugging
+      window._map = map.current;
 
       map.current.addControl(new mapboxgl.NavigationControl(), 'bottom-right');
 
@@ -195,16 +203,14 @@ function App() {
       map.current.addControl(exportControl.current, 'top-right');
 
       map.current.on('load', () => {
-        console.log('Map engine fully operational');
+        console.log('Map basic operational');
         setLoading(false);
         clearTimeout(timeout);
       });
 
       map.current.on('error', (e) => {
         console.error('Map Engine Error:', e);
-        if (e.error?.message?.includes('Style')) {
-          setErrorMsg('Style loading restricted');
-        }
+        setErrorMsg(e.error?.message || 'Engine collision');
       });
 
     } catch (err) {
@@ -253,17 +259,17 @@ function App() {
             <p>Convert Mapbox layers to Figma / Illustrator.</p>
           </div>
           <button className="theme-toggle" onClick={() => setTheme(p => p === 'dark' ? 'light' : 'dark')}>
-            {theme === 'dark' ? <Sun size={20} /> : <Moon size={20} />}
+            {theme === 'dark' ? <Sun size={20} /> : <Moon size={12} />}
           </button>
         </header>
 
         <div className="stats-grid">
           <div className="stat-card">
-            <div className="stat-label">POIs Identified</div>
+            <div className="stat-label">POIS IDENTIFIED</div>
             <div className="stat-value">{poiCount}</div>
           </div>
           <div className="stat-card">
-            <div className="stat-label">Engine Status</div>
+            <div className="stat-label">ENGINE</div>
             <div className="stat-value" style={{ fontSize: '0.8rem', color: errorMsg ? '#ef4444' : '#f8c21a' }}>
               {errorMsg ? 'RESTRICTED' : 'ACTIVE'}
             </div>
@@ -273,9 +279,18 @@ function App() {
         <div className="controls">
           <div className="section-title">System Status</div>
           <div className="pulse-bubble">{status}</div>
+
+          <button
+            className="btn btn-outline"
+            style={{ marginTop: '12px', width: '100%', fontSize: '0.75rem', gap: '8px' }}
+            onClick={performSync}
+          >
+            <RefreshCw size={14} /> Force Sync Points
+          </button>
+
           {errorMsg && (
-            <div style={{ fontSize: '0.7rem', color: '#ef4444', marginTop: '6px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-              <AlertCircle size={12} /> Domain restrictions applied
+            <div style={{ fontSize: '0.7rem', color: '#ef4444', marginTop: '10px', display: 'flex', alignItems: 'center', gap: '4px' }}>
+              <AlertCircle size={12} /> Resource limitation detected
             </div>
           )}
         </div>
@@ -292,9 +307,9 @@ function App() {
 
         <div className="footer">
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px', color: '#10b981' }}>
-            <CheckCircle2 size={14} /> Live API Connection Active
+            <CheckCircle2 size={14} /> Live Connection Active
           </div>
-          <p>Note: Vector paths and text layers are preserved for professional editing.</p>
+          <p>Note: High-fidelity vector paths are preserved.</p>
         </div>
       </div>
 
