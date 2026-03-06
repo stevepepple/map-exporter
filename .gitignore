@@ -1,1 +1,5 @@
-node_modules\n.DS_Store\ndist\n.env
+node_modules
+dist
+.env
+.DS_Store
+*.local
