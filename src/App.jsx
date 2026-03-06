@@ -22,15 +22,17 @@ function App() {
   const [theme, setTheme] = useState('light');
   const [poiData, setPoiData] = useState([]);
 
-  // Ref for the "Initial Render Nudge"
+  // Nudge Tracker
   const renderedOnce = useRef(false);
+  const nudgeRetryCount = useRef(0);
 
   // Theme Sync
   useEffect(() => {
     document.documentElement.setAttribute('data-theme', theme);
     if (map.current) {
-      console.log('Switching style to:', theme);
-      renderedOnce.current = false; // Reset nudge for theme change
+      console.log('Applying map style:', theme);
+      renderedOnce.current = false;
+      nudgeRetryCount.current = 0;
       map.current.setStyle(theme === 'dark' ? MAPBOX_STYLE_DARK : MAPBOX_STYLE_LIGHT);
     }
   }, [theme]);
@@ -43,12 +45,12 @@ function App() {
         const response = await fetch('https://charlotteshout.com/wp-json/vibemap/v1/places-data?page=1&per_page=500');
         const data = await response.json();
         const places = Array.isArray(data) ? data : (data.places || []);
-        console.log('POIs fetched:', places.length);
+        console.log('Data Feed Success:', places.length);
         setPoiCount(places.length);
         setPoiData(places);
         setStatus(places.length > 0 ? 'Data Loaded' : 'No POIs Found');
       } catch (err) {
-        console.error('Fetch Error:', err);
+        console.error('Data Feed Error:', err);
         setStatus('Data Fetch Failed');
       }
     };
@@ -57,14 +59,9 @@ function App() {
 
   const addVectorLayers = (places) => {
     const currentMap = map.current;
-    if (!currentMap) return false;
+    if (!currentMap || places.length === 0) return false;
 
-    // Check if source already exists to avoid errors
-    if (currentMap.getSource('pois')) {
-      return true;
-    }
-
-    console.log('Injecting vector layers for', places.length, 'points');
+    console.log('Synchronizing vector state for', places.length, 'points');
 
     const features = places.map(place => {
       const lng = parseFloat(place.meta?.vibemap_place_longitude || place.longitude);
@@ -80,59 +77,72 @@ function App() {
     }).filter(f => !isNaN(f.geometry.coordinates[0]) && !isNaN(f.geometry.coordinates[1]));
 
     try {
-      currentMap.addSource('pois', {
-        type: 'geojson',
-        data: { type: 'FeatureCollection', features }
-      });
+      // Idempotent Source Addition
+      if (!currentMap.getSource('pois')) {
+        currentMap.addSource('pois', {
+          type: 'geojson',
+          data: { type: 'FeatureCollection', features }
+        });
+      }
 
-      currentMap.addLayer({
-        id: 'poi-circles',
-        type: 'circle',
-        source: 'pois',
-        paint: {
-          'circle-radius': 6,
-          'circle-color': '#f8c21a',
-          'circle-stroke-width': 2,
-          'circle-stroke-color': '#ffffff'
-        }
-      });
+      // Idempotent Layer Addition (Circles)
+      if (!currentMap.getLayer('poi-circles')) {
+        currentMap.addLayer({
+          id: 'poi-circles',
+          type: 'circle',
+          source: 'pois',
+          paint: {
+            'circle-radius': 6,
+            'circle-color': '#f8c21a',
+            'circle-stroke-width': 2,
+            'circle-stroke-color': '#ffffff'
+          }
+        });
+      }
 
-      currentMap.addLayer({
-        id: 'poi-labels',
-        type: 'symbol',
-        source: 'pois',
-        layout: {
-          'text-field': ['get', 'title'],
-          'text-font': ['Open Sans Regular', 'Arial Unicode MS Regular'],
-          'text-size': 12,
-          'text-offset': [0, 1.5],
-          'text-anchor': 'top'
-        },
-        paint: {
-          'text-color': theme === 'dark' ? '#ffffff' : '#0f172a',
-          'text-halo-color': theme === 'dark' ? '#000000' : '#ffffff',
-          'text-halo-width': 2
-        }
-      });
+      // Idempotent Layer Addition (Labels)
+      if (!currentMap.getLayer('poi-labels')) {
+        currentMap.addLayer({
+          id: 'poi-labels',
+          type: 'symbol',
+          source: 'pois',
+          layout: {
+            'text-field': ['get', 'title'],
+            'text-font': ['Open Sans Regular', 'Arial Unicode MS Regular'],
+            'text-size': 12,
+            'text-offset': [0, 1.5],
+            'text-anchor': 'top'
+          },
+          paint: {
+            'text-color': theme === 'dark' ? '#ffffff' : '#0f172a',
+            'text-halo-color': theme === 'dark' ? '#000000' : '#ffffff',
+            'text-halo-width': 2
+          }
+        });
+      }
 
-      console.log('Layers successfully injected');
+      console.log('Vector stack verified locally.');
 
-      // THE NUDGE: Force Mapbox to wake up
-      if (!renderedOnce.current) {
+      // THE NUDGE (Only fires if layers are present but potentially invisible)
+      if (!renderedOnce.current && nudgeRetryCount.current < 5) {
+        nudgeRetryCount.current++;
         setTimeout(() => {
-          console.log('Executing render nudge...');
+          console.log('FORCE NUDGE: Waking up Mapbox renderer', nudgeRetryCount.current);
           currentMap.triggerRepaint();
           currentMap.resize();
-          // Tiny zoom nudge is the most effective way to force a layer reveal in stuck engines
-          currentMap.zoomTo(currentMap.getZoom() + 0.0001, { animate: false });
-          currentMap.zoomTo(currentMap.getZoom() - 0.0001, { animate: false });
+
+          // Slight positional nudge to break rendering stall
+          const zoom = currentMap.getZoom();
+          currentMap.setZoom(zoom + 0.00001);
+          setTimeout(() => currentMap.setZoom(zoom), 50);
+
           renderedOnce.current = true;
-        }, 100);
+        }, 200 * nudgeRetryCount.current);
       }
 
       return true;
     } catch (e) {
-      console.warn('Silent layer injection failure (engine busy):', e.message);
+      console.warn('Sync attempt interrupted by engine state:', e.message);
       return false;
     }
   };
@@ -141,58 +151,50 @@ function App() {
     const currentMap = map.current;
     if (!currentMap || poiData.length === 0) return;
 
-    // Avoid infinite sync loops if layers are already built
-    if (currentMap.getLayer('poi-circles')) {
+    // Check if we are already rendered to prevent CPU thrashing
+    const hasLayers = !!currentMap.getLayer('poi-circles');
+
+    // If layers exist, we still might need the nudge if it hasn't succeeded
+    if (hasLayers && renderedOnce.current) {
       return;
     }
 
-    // Be slightly more permissive on initial load state
-    const isReady = currentMap.isStyleLoaded() || currentMap.loaded() || renderedOnce.current;
+    // Be extremely aggressive on initial load
+    const isStyleSafe = currentMap.isStyleLoaded() || currentMap.loaded() || (nudgeRetryCount.current > 0);
 
-    // Still try to add if the map is initialized but maybe just reporting as not "loaded"
-    if (!isReady && !currentMap.getSource('pois')) {
-      // Proceed anyway, addVectorLayers has its own guards
-    } else if (!isReady) {
-      return;
-    }
-
-    console.log('Syncing layers...');
-    try {
-      if (currentMap.getLayer('poi-labels')) currentMap.removeLayer('poi-labels');
-      if (currentMap.getLayer('poi-circles')) currentMap.removeLayer('poi-circles');
-      if (currentMap.getSource('pois')) currentMap.removeSource('pois');
-    } catch (e) { }
-
+    // Even if style isn't "safe", we try to inject.
+    // If Mapbox is stuck in the "not loaded" state, this is the only way out.
     addVectorLayers(poiData);
   };
 
-  // Guaranteed Render Engine
+  // Heavy-Duty Rendering Monitor
   useEffect(() => {
     if (!map.current) return;
 
     const currentMap = map.current;
+    const events = ['load', 'style.load', 'idle', 'moveend', 'styledata', 'data'];
 
-    // Attach to all relevant events
-    const events = ['load', 'style.load', 'idle', 'moveend', 'styledata'];
-    const handlers = events.map(ev => {
-      const handler = () => performSync();
-      currentMap.on(ev, handler);
-      return { ev, handler };
-    });
+    events.forEach(ev => currentMap.on(ev, performSync));
 
-    // Safety polling logic
+    // High-frequency recovery polling for the first 15 seconds
     const pollInterval = setInterval(() => {
-      if (!currentMap.getLayer('poi-circles') && poiData.length > 0) {
-        console.log('Polling detected missing layers, attempting recovery...');
+      if (!currentMap.getLayer('poi-circles') || !renderedOnce.current) {
         performSync();
       }
-    }, 1500);
+    }, 1200);
 
-    // Initial attempt after data or theme change
+    // Stop polling after 30 seconds if successful
+    setTimeout(() => {
+      if (renderedOnce.current) {
+        clearInterval(pollInterval);
+        console.log('Stabilization period complete.');
+      }
+    }, 30000);
+
     performSync();
 
     return () => {
-      handlers.forEach(({ ev, handler }) => currentMap.off(ev, handler));
+      events.forEach(ev => currentMap.off(ev, performSync));
       clearInterval(pollInterval);
     };
   }, [poiData, theme]);
@@ -203,12 +205,12 @@ function App() {
     const timeout = setTimeout(() => {
       if (loading) {
         setLoading(false);
-        setStatus('Ready (Auto-reveal)');
+        setStatus('Ready (Engine Reveal)');
       }
-    }, 8000);
+    }, 10000);
 
     try {
-      console.log('Igniting Mapbox engine');
+      console.log('Starting Mapbox Vector Engine...');
       map.current = new mapboxgl.Map({
         container: mapContainer.current,
         style: theme === 'dark' ? MAPBOX_STYLE_DARK : MAPBOX_STYLE_LIGHT,
@@ -217,7 +219,7 @@ function App() {
         preserveDrawingBuffer: true
       });
 
-      // Expose for production inspection
+      // Production inspection hook
       window._map = map.current;
 
       map.current.addControl(new mapboxgl.NavigationControl(), 'bottom-right');
@@ -233,14 +235,14 @@ function App() {
       map.current.addControl(exportControl.current, 'top-right');
 
       map.current.on('load', () => {
-        console.log('Map engine operational');
+        console.log('Core operational.');
         setLoading(false);
         clearTimeout(timeout);
-        performSync(); // Force sync on first load
+        performSync();
       });
 
     } catch (err) {
-      console.error('Fatal Init Error:', err);
+      console.error('Engine Init Failure:', err);
       setErrorMsg(err.message);
       setLoading(false);
     }
@@ -253,23 +255,23 @@ function App() {
 
   const handleExport = (format) => {
     setExporting(true);
-    setStatus(`Exporting ${format.toUpperCase()}...`);
+    setStatus(`Finalizing ${format.toUpperCase()} Vector Core...`);
     try {
       const btn = document.querySelector(`.mapboxgl-ctrl-export-${format}`) ||
         document.querySelector('.mapbox-gl-export-btn');
       if (btn) {
         btn.click();
-        setStatus('Export successful');
+        setStatus('Export initiated');
       } else {
-        alert(`Generating ${format.toUpperCase()}...`);
+        alert(`Requesting high-res ${format.toUpperCase()}...`);
       }
     } catch (err) {
       setStatus('Export failed');
     }
     setTimeout(() => {
       setExporting(false);
-      setStatus(prev => prev === 'Export successful' ? 'Ready' : prev);
-    }, 4000);
+      setStatus(prev => prev === 'Export initiated' ? 'Ready' : prev);
+    }, 4500);
   };
 
   return (
@@ -278,7 +280,7 @@ function App() {
         <header className="header">
           <div className="brand-section">
             <h1>Vector Core</h1>
-            <p>Export Mapbox layers to Figma / Illustrator.</p>
+            <p>High-resolution Mapbox vector exporter.</p>
           </div>
           <button className="theme-toggle" onClick={() => setTheme(p => p === 'dark' ? 'light' : 'dark')}>
             {theme === 'dark' ? <Sun size={20} /> : <Moon size={20} />}
@@ -299,23 +301,24 @@ function App() {
         </div>
 
         <div className="controls">
-          <div className="section-title">Engine Status</div>
+          <div className="section-title">Engine Health</div>
           <div className="pulse-bubble">{status}</div>
 
           <button
             className="btn btn-outline"
             style={{ marginTop: '12px', width: '100%', fontSize: '0.75rem', gap: '8px' }}
             onClick={() => {
-              renderedOnce.current = false; // Reset nudge for manual click
+              renderedOnce.current = false;
+              nudgeRetryCount.current = 0;
               performSync();
             }}
           >
-            <RefreshCw size={14} /> Refresh Map Layers
+            <RefreshCw size={14} /> Manually Refresh Layers
           </button>
         </div>
 
         <div className="export-section">
-          <div className="section-title">Export Options</div>
+          <div className="section-title">Production Export</div>
           <button className="btn btn-primary" onClick={() => handleExport('svg')} disabled={exporting}>
             <Download size={18} /> Export SVG (Figma)
           </button>
@@ -326,9 +329,9 @@ function App() {
 
         <div className="footer">
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px', color: '#10b981' }}>
-            <CheckCircle2 size={14} /> Live API Active
+            <CheckCircle2 size={14} /> Live API Feed Active
           </div>
-          <p>Note: Vector paths are preserved for design edits.</p>
+          <p>Vector paths and text layers are preserved.</p>
         </div>
       </div>
 
@@ -340,7 +343,7 @@ function App() {
           <span style={{ fontWeight: 600, letterSpacing: '0.05em', textTransform: 'uppercase' }}>Preparing map...</span>
           <span style={{ fontSize: '0.875rem', color: 'var(--text-muted)' }}>{status}</span>
           <button className="btn btn-outline" style={{ marginTop: '20px', fontSize: '0.75rem' }} onClick={() => setLoading(false)}>
-            Bypass Loading
+            Force Reveal
           </button>
         </div>
       )}
